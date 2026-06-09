@@ -1,0 +1,146 @@
+/* 全局样式 */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 22px;
+  color: #000000A0;
+  background-color: #F5F5F5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 代码字体 */
+code, pre, .monaco-editor {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace !important;
+  font-size: 13px;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #D9D9D9;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #BFBFBF;
+}
+
+/* Ant Design 覆盖样式 */
+.ant-card {
+  transition: box-shadow 0.3s ease;
+}
+
+.ant-card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08) !important;
+}
+
+/* 对话气泡样式 */
+.chat-bubble-user {
+  background: #1677FF;
+  color: #FFFFFF;
+  border-radius: 12px 12px 0 12px;
+  padding: 10px 14px;
+  max-width: 70%;
+  word-break: break-word;
+}
+
+.chat-bubble-assistant {
+  background: #F6F6F6;
+  color: #000000E0;
+  border-radius: 12px 12px 12px 0;
+  padding: 10px 14px;
+  max-width: 85%;
+  word-break: break-word;
+}
+
+/* 脉冲动画 */
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+.pulse-animation {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* 打字光标动画 */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.typing-cursor::after {
+  content: '▊';
+  animation: blink 0.8s step-end infinite;
+  color: #1677FF;
+}
+
+/* 选中态样式 */
+.list-item-selected {
+  background-color: #F0F5FF !important;
+  border-left: 3px solid #1677FF;
+}
+
+/* 工具调用卡片左侧蓝色竖条 */
+.tool-call-indicator {
+  border-left: 3px solid #1677FF;
+  padding-left: 12px;
+}
+
+/* 严重度色条 */
+.severity-bar {
+  width: 4px;
+  border-radius: 2px;
+}
+
+/* 状态指示灯 */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-dot-success {
+  background-color: #52C41A;
+}
+
+.status-dot-error {
+  background-color: #FF4D4F;
+}
+
+.status-dot-warning {
+  background-color: #FAAD14;
+}
+
+.status-dot-processing {
+  background-color: #1677FF;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.status-dot-disabled {
+  background-color: #8C8C8C;
+}
