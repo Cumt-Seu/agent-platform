@@ -1,29 +1,19 @@
-// 故障排障页面
+// 故障排障页面 — 使用 diagnosisService + DagViewer + step_update SSE
 
 import { Layout, Card, Typography, Input, Select, Button, DatePicker, Steps, List, Tag, Space, Progress, Divider } from 'antd';
 import { PlayCircleOutlined } from '@ant-design/icons';
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import StatusTag from '../../components/common/StatusTag';
+import DagViewer from '../../components/business/DagViewer/DagViewer';
+import { useSSE } from '../../hooks/useSSE';
 import { formatRelativeTime, getConfidenceColor } from '../../utils/format';
-import type { DiagnosisTask, DiagnosisStep, RiskLevel } from '../../types';
+import { diagnosisService } from '../../services/diagnosisService';
+import type { DiagnosisStep, DiagnosisResult, RiskLevel } from '../../types';
 
 const { Sider, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
-
-// Mock 数据
-const mockDiagnosisTasks: DiagnosisTask[] = [
-  { diagnosisId: 'diag-001', title: 'NPE排查 - user-service', serviceName: 'user-service', status: 'COMPLETED', createdAt: Date.now() - 3600000 },
-  { diagnosisId: 'diag-002', title: 'OOM排查 - order-service', serviceName: 'order-service', status: 'RUNNING', createdAt: Date.now() - 1800000 },
-  { diagnosisId: 'diag-003', title: '超时排查 - gateway', serviceName: 'gateway', status: 'COMPLETED', createdAt: Date.now() - 86400000 },
-];
-
-const mockSteps: DiagnosisStep[] = [
-  { stepName: '日志分析', skillName: 'log_analysis', status: 'SUCCESS', duration: 3200, output: '解析到 NullPointerException，位于 UserController.java:45' },
-  { stepName: '监控指标关联', skillName: 'metrics_correlation', status: 'SUCCESS', duration: 5600, output: '异常时段 CPU 使用率飙升至 92%，内存使用率正常' },
-  { stepName: '案例检索', skillName: 'case_search', status: 'SUCCESS', duration: 1800, output: '检索到 3 个相似案例' },
-  { stepName: '方案推荐', skillName: 'solution_recommend', status: 'SUCCESS', duration: 4200, output: '推荐 2 个处置方案' },
-];
 
 const RISK_COLORS: Record<RiskLevel, string> = {
   LOW: '#52C41A',
@@ -33,28 +23,73 @@ const RISK_COLORS: Record<RiskLevel, string> = {
 
 const DiagnosisPage: React.FC = () => {
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
+  const [steps, setSteps] = useState<DiagnosisStep[]>([]);
+  const [result, setResult] = useState<DiagnosisResult | null>(null);
+  const [logInput, setLogInput] = useState('');
+  const [serviceInput, setServiceInput] = useState<string | undefined>();
+  const queryClient = useQueryClient();
+
+  const { data: tasks = [] } = useQuery({
+    queryKey: ['diagnosisTasks'],
+    queryFn: () => diagnosisService.getTasks(),
+  });
+
+  useQuery({
+    queryKey: ['diagnosisDetail', selectedTask],
+    queryFn: async () => {
+      const detail = await diagnosisService.getTaskDetail(selectedTask!);
+      setSteps(detail.steps);
+      setResult(detail.result || null);
+      return detail;
+    },
+    enabled: !!selectedTask,
+  });
+
+  const analyzeMutation = useMutation({
+    mutationFn: (params: Parameters<typeof diagnosisService.analyze>[0]) => diagnosisService.analyze(params),
+    onSuccess: (task) => {
+      queryClient.invalidateQueries({ queryKey: ['diagnosisTasks'] });
+      setSelectedTask(task.diagnosisId);
+    },
+  });
+
+  // step_update SSE
+  useSSE({
+    url: `/api/v1/diagnosis/${selectedTask}/stream`,
+    enabled: !!selectedTask && tasks.find((t) => t.diagnosisId === selectedTask)?.status === 'RUNNING',
+    handlers: {
+      onStepUpdate: (data) => {
+        const step = data as DiagnosisStep;
+        setSteps((prev) => [...prev, step]);
+      },
+      onDagUpdate: () => {
+        // DagViewer 内部处理
+      },
+      onDone: () => {
+        queryClient.invalidateQueries({ queryKey: ['diagnosisTasks'] });
+        queryClient.invalidateQueries({ queryKey: ['diagnosisDetail', selectedTask] });
+      },
+    },
+  });
+
+  const handleStart = useCallback(() => {
+    if (!logInput.trim()) return;
+    analyzeMutation.mutate({
+      exceptionLog: logInput,
+      serviceName: serviceInput,
+    });
+  }, [logInput, serviceInput, analyzeMutation]);
 
   return (
     <Layout style={{ height: '100%', background: 'transparent', gap: 16 }}>
-      {/* 左侧：排障历史 */}
-      <Sider
-        width={280}
-        style={{
-          background: '#fff',
-          borderRadius: 8,
-          padding: 16,
-          overflow: 'auto',
-        }}
-      >
+      <Sider width={280} style={{ background: '#fff', borderRadius: 8, padding: 16, overflow: 'auto' }}>
         <Title level={5} style={{ marginBottom: 16 }}>排障历史</Title>
         <List
-          dataSource={mockDiagnosisTasks}
+          dataSource={tasks}
           renderItem={(task) => (
             <List.Item
               style={{
-                cursor: 'pointer',
-                padding: '10px 12px',
-                borderRadius: 6,
+                cursor: 'pointer', padding: '10px 12px', borderRadius: 6,
                 background: selectedTask === task.diagnosisId ? '#F0F5FF' : 'transparent',
                 borderLeft: selectedTask === task.diagnosisId ? '3px solid #1677FF' : '3px solid transparent',
               }}
@@ -74,9 +109,7 @@ const DiagnosisPage: React.FC = () => {
         />
       </Sider>
 
-      {/* 右侧：排障工作台 */}
       <Content style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {/* 排障输入卡片 */}
         <Card title="故障排障" style={{ borderRadius: 8 }}>
           <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
             <div style={{ flex: 1 }}>
@@ -84,6 +117,8 @@ const DiagnosisPage: React.FC = () => {
               <TextArea
                 rows={4}
                 placeholder="粘贴异常日志/告警信息，支持多行"
+                value={logInput}
+                onChange={(e) => setLogInput(e.target.value)}
                 style={{ borderRadius: 6 }}
               />
             </div>
@@ -94,6 +129,8 @@ const DiagnosisPage: React.FC = () => {
                 allowClear
                 showSearch
                 style={{ width: '100%', marginBottom: 16 }}
+                value={serviceInput}
+                onChange={setServiceInput}
                 options={[
                   { value: 'user-service', label: 'user-service' },
                   { value: 'order-service', label: 'order-service' },
@@ -104,73 +141,76 @@ const DiagnosisPage: React.FC = () => {
               <DatePicker showTime style={{ width: '100%' }} />
             </div>
           </div>
-          <Button type="primary" icon={<PlayCircleOutlined />} size="large">
+          <Button
+            type="primary"
+            icon={<PlayCircleOutlined />}
+            size="large"
+            onClick={handleStart}
+            loading={analyzeMutation.isPending}
+          >
             开始排障
           </Button>
         </Card>
 
         {/* 排障步骤时间线 */}
-        {selectedTask && (
+        {selectedTask && steps.length > 0 && (
           <Card title="排障步骤" style={{ borderRadius: 8 }}>
             <Steps
-              current={3}
-              items={mockSteps.map((step) => ({
+              current={steps.findIndex((s) => s.status === 'RUNNING') || steps.filter((s) => s.status === 'SUCCESS').length}
+              items={steps.map((step) => ({
                 title: step.stepName,
                 status: step.status === 'SUCCESS' ? 'finish' : step.status === 'RUNNING' ? 'process' : step.status === 'FAILED' ? 'error' : 'wait',
-                description: step.output ? (
-                  <Text type="secondary" style={{ fontSize: 12 }}>{step.output}</Text>
-                ) : undefined,
+                description: step.output ? <Text type="secondary" style={{ fontSize: 12 }}>{step.output}</Text> : undefined,
               }))}
             />
           </Card>
         )}
 
-        {/* 排障结果卡片 */}
+        {/* DAG Viewer */}
         {selectedTask && (
+          <Card title="执行计划" style={{ borderRadius: 8 }}>
+            <DagViewer sessionId={selectedTask} mode="LIVE" />
+          </Card>
+        )}
+
+        {/* 排障结果卡片 */}
+        {selectedTask && result && (
           <Card title="排障结果" style={{ borderRadius: 8 }}>
             <Space direction="vertical" style={{ width: '100%' }} size={16}>
-              {/* 故障摘要 */}
               <div>
                 <Text strong style={{ display: 'block', marginBottom: 8 }}>故障摘要</Text>
-                <Paragraph>
-                  user-service 在 10:30 出现 NPE，疑似 UserController.getUserById 方法空指针异常，影响用户查询接口
-                </Paragraph>
-                <Space>
-                  <Tag>影响服务: user-service</Tag>
-                  <Tag>影响接口: /api/user/{'{id}'}</Tag>
-                </Space>
+                <Paragraph>{result.summary}</Paragraph>
+                {result.impactScope.length > 0 && (
+                  <Space>
+                    {result.impactScope.map((scope) => <Tag key={scope}>{scope}</Tag>)}
+                  </Space>
+                )}
               </div>
-
               <Divider />
-
-              {/* 根因分析 */}
               <div>
                 <Text strong style={{ display: 'block', marginBottom: 8 }}>根因分析</Text>
-                <div style={{ marginBottom: 8 }}>
-                  <Space>
-                    <Text>1. 置信度 85%</Text>
-                    <Progress percent={85} strokeColor={getConfidenceColor(0.85)} style={{ width: 120 }} size="small" />
-                  </Space>
-                  <Paragraph type="secondary" style={{ marginLeft: 24, marginBottom: 4 }}>
-                    UserService.findById 返回 null 未做空判断，直接调用 getter 方法触发 NPE
-                  </Paragraph>
-                </div>
+                {result.rootCauses.map((cause, idx) => (
+                  <div key={idx} style={{ marginBottom: 8 }}>
+                    <Space>
+                      <Text>{idx + 1}. 置信度 {(cause.confidence * 100).toFixed(0)}%</Text>
+                      <Progress percent={cause.confidence * 100} strokeColor={getConfidenceColor(cause.confidence)} style={{ width: 120 }} size="small" />
+                    </Space>
+                    <Paragraph type="secondary" style={{ marginLeft: 24, marginBottom: 4 }}>{cause.cause}</Paragraph>
+                  </div>
+                ))}
               </div>
-
               <Divider />
-
-              {/* 处置方案 */}
               <div>
                 <Text strong style={{ display: 'block', marginBottom: 8 }}>处置方案</Text>
-                <div style={{ marginBottom: 8 }}>
-                  <Space>
-                    <Text>方案 1</Text>
-                    <Tag color={RISK_COLORS.LOW}>LOW</Tag>
-                  </Space>
-                  <Paragraph type="secondary" style={{ marginLeft: 24 }}>
-                    在 UserController.getUserById 中添加空值判断，返回 404 响应
-                  </Paragraph>
-                </div>
+                {result.solutions.map((sol, idx) => (
+                  <div key={idx} style={{ marginBottom: 8 }}>
+                    <Space>
+                      <Text>方案 {idx + 1}</Text>
+                      <Tag color={RISK_COLORS[sol.riskLevel]}>{sol.riskLevel}</Tag>
+                    </Space>
+                    <Paragraph type="secondary" style={{ marginLeft: 24 }}>{sol.description}</Paragraph>
+                  </div>
+                ))}
               </div>
             </Space>
           </Card>

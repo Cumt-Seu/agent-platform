@@ -7,6 +7,8 @@ import AppLayout from '../components/layout/AppLayout';
 import { lazy, Suspense } from 'react';
 import { Spin } from 'antd';
 
+const LoginPage = lazy(() => import('../pages/login'));
+const LoginCallback = lazy(() => import('../pages/login/callback'));
 const ChatPage = lazy(() => import('../pages/chat'));
 const SkillPage = lazy(() => import('../pages/skill'));
 const KnowledgePage = lazy(() => import('../pages/knowledge'));
@@ -30,6 +32,24 @@ const LazyPage: React.FC<{ children: React.ReactNode }> = ({ children }) => (
 );
 
 const router = createBrowserRouter([
+  // 登录路由 — AppLayout 之外
+  {
+    path: '/login',
+    element: (
+      <LazyPage>
+        <LoginPage />
+      </LazyPage>
+    ),
+  },
+  {
+    path: '/login/callback',
+    element: (
+      <LazyPage>
+        <LoginCallback />
+      </LazyPage>
+    ),
+  },
+  // 主应用路由
   {
     path: '/',
     element: <AppLayout />,

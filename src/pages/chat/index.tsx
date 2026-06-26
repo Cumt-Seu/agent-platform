@@ -1,38 +1,177 @@
-// 智能对话页面
+// 智能对话页面 — 使用 agentService + ChatPanel + useSSE
 
-import { Layout, Typography } from 'antd';
+import { Layout, Typography, Button, Dropdown } from 'antd';
 import {
-  MessageOutlined,
-  CodeOutlined,
-  AuditOutlined,
-  ToolOutlined,
-  BookOutlined,
+  PlusOutlined,
+  PushpinOutlined,
+  EditOutlined,
+  DeleteOutlined,
+  MoreOutlined,
 } from '@ant-design/icons';
+import { useNavigate, useParams } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useCallback, useRef } from 'react';
 import { useChatStore } from '../../stores/useChatStore';
+import { agentService } from '../../services/agentService';
 import SearchBar from '../../components/common/SearchBar';
+import ChatPanel from '../../components/business/ChatPanel/ChatPanel';
+import { useSSE } from '../../hooks/useSSE';
 import { groupByTime, truncateText } from '../../utils/format';
-import type { SkillType } from '../../types';
+import type { ChatMessage } from '../../types';
 
-const { Sider, Content } = Layout;
-const { Text, Title } = Typography;
-
-const QUICK_ENTRIES: { label: string; icon: React.ReactNode; skill: SkillType; prompt: string }[] = [
-  { label: '代码生成', icon: <CodeOutlined />, skill: 'code_generation', prompt: '请描述你需要生成的代码功能：' },
-  { label: '代码评审', icon: <AuditOutlined />, skill: 'code_review', prompt: '请输入需要评审的代码或 MR 地址：' },
-  { label: '故障排查', icon: <ToolOutlined />, skill: 'fault_diagnosis', prompt: '请粘贴异常日志或告警信息：' },
-  { label: '知识问答', icon: <BookOutlined />, skill: 'knowledge_qa', prompt: '请输入你的问题：' },
-];
-
-const SKILL_OPTIONS: { key: SkillType; label: string }[] = [
-  { key: 'auto', label: '自动' },
-  { key: 'code_generation', label: '代码生成' },
-  { key: 'code_review', label: '代码评审' },
-  { key: 'fault_diagnosis', label: '故障排查' },
-  { key: 'knowledge_qa', label: '知识问答' },
-];
+const { Sider } = Layout;
+const { Text } = Typography;
 
 const ChatPage: React.FC = () => {
-  const { sessions, currentSessionId, selectedSkill, setSelectedSkill } = useChatStore();
+  const navigate = useNavigate();
+  const { sessionId: urlSessionId } = useParams();
+  const queryClient = useQueryClient();
+
+  const {
+    currentSessionId,
+    messages,
+    selectedSkill,
+    isStreaming,
+    setCurrentSessionId,
+    setMessages,
+    addMessage,
+    updateMessage,
+    setSelectedSkill,
+    setIsStreaming,
+  } = useChatStore();
+
+  // 获取会话列表
+  const { data: sessions = [] } = useQuery({
+    queryKey: ['sessions'],
+    queryFn: () => agentService.getSessions(),
+  });
+
+  // URL 参数同步
+  useEffect(() => {
+    if (urlSessionId && urlSessionId !== currentSessionId) {
+      setCurrentSessionId(urlSessionId);
+    }
+  }, [urlSessionId, currentSessionId, setCurrentSessionId]);
+
+  // 获取当前会话消息
+  const { data: sessionMessages } = useQuery({
+    queryKey: ['messages', currentSessionId],
+    queryFn: () => agentService.getMessages(currentSessionId!),
+    enabled: !!currentSessionId,
+  });
+
+  useEffect(() => {
+    if (sessionMessages) {
+      setMessages(sessionMessages);
+    }
+  }, [sessionMessages, setMessages]);
+
+  // SSE 对话
+  const streamingMsgRef = useRef<ChatMessage | null>(null);
+
+  const handleSSEContent = useCallback((data: unknown) => {
+    const content = typeof data === 'string' ? data : (data as { content?: string })?.content || '';
+    if (streamingMsgRef.current) {
+      streamingMsgRef.current = {
+        ...streamingMsgRef.current,
+        content: streamingMsgRef.current.content + content,
+      };
+      updateMessage(streamingMsgRef.current.id, { content: streamingMsgRef.current.content });
+    }
+  }, [updateMessage]);
+
+  const handleSSEDone = useCallback(() => {
+    setIsStreaming(false);
+    queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  }, [setIsStreaming, queryClient]);
+
+  useSSE({
+    url: '/api/v1/agent/chat',
+    body: currentSessionId ? { sessionId: currentSessionId } : undefined,
+    handlers: {
+      onContent: handleSSEContent,
+      onThinking: (data) => {
+        if (streamingMsgRef.current) {
+          updateMessage(streamingMsgRef.current.id, { thinkingInfo: data as ChatMessage['thinkingInfo'] });
+        }
+      },
+      onToolCall: (data) => {
+        if (streamingMsgRef.current) {
+          updateMessage(streamingMsgRef.current.id, { toolCalls: [...(streamingMsgRef.current.toolCalls || []), data as ChatMessage['toolCalls'] extends (infer U)[] ? U : never] });
+        }
+      },
+      onDone: handleSSEDone,
+      onError: () => setIsStreaming(false),
+    },
+    enabled: isStreaming,
+  });
+
+  // 发送消息
+  const handleSend = useCallback((message: string) => {
+    if (!message.trim()) return;
+
+    const userMsg: ChatMessage = {
+      id: `msg-${Date.now()}`,
+      sessionId: currentSessionId || '',
+      type: 'user',
+      content: message,
+      timestamp: Date.now(),
+    };
+    addMessage(userMsg);
+
+    const assistantMsg: ChatMessage = {
+      id: `msg-${Date.now() + 1}`,
+      sessionId: currentSessionId || '',
+      type: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+    };
+    addMessage(assistantMsg);
+    streamingMsgRef.current = assistantMsg;
+    setIsStreaming(true);
+  }, [currentSessionId, addMessage, setIsStreaming]);
+
+  // 新建会话
+  const handleNewChat = useCallback(async () => {
+    try {
+      const session = await agentService.createSession();
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      setCurrentSessionId(session.sessionId);
+      navigate(`/chat/${session.sessionId}`);
+    } catch {
+      // ignore
+    }
+  }, [queryClient, setCurrentSessionId, navigate]);
+
+  // 切换会话
+  const handleSelectSession = useCallback((sessionId: string) => {
+    setCurrentSessionId(sessionId);
+    navigate(`/chat/${sessionId}`);
+  }, [setCurrentSessionId, navigate]);
+
+  // 删除会话
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    try {
+      await agentService.deleteSession(sessionId);
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      if (currentSessionId === sessionId) {
+        setCurrentSessionId(null);
+        navigate('/chat');
+      }
+    } catch {
+      // ignore
+    }
+  }, [currentSessionId, queryClient, setCurrentSessionId, navigate]);
+
+  // 置顶会话
+  const handlePinSession = useCallback(async (sessionId: string, pinned: boolean) => {
+    try {
+      await agentService.pinSession(sessionId, !pinned);
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    } catch {
+      // ignore
+    }
+  }, [queryClient]);
 
   const groupedSessions = groupByTime(sessions, 'lastActiveAt');
 
@@ -48,32 +187,21 @@ const ChatPage: React.FC = () => {
           flexDirection: 'column',
         }}
       >
-        {/* 新建对话按钮 */}
         <div style={{ padding: '12px 16px' }}>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 6,
-              padding: '8px 16px',
-              border: '1px dashed #D9D9D9',
-              borderRadius: 6,
-              cursor: 'pointer',
-              color: '#1677FF',
-              fontSize: 14,
-            }}
+          <Button
+            type="dashed"
+            icon={<PlusOutlined />}
+            block
+            onClick={handleNewChat}
           >
-            <MessageOutlined /> 新建对话
-          </div>
+            新建对话
+          </Button>
         </div>
 
-        {/* 搜索 */}
         <div style={{ padding: '0 16px 12px' }}>
           <SearchBar placeholder="搜索会话..." />
         </div>
 
-        {/* 会话列表 */}
         <div style={{ flex: 1, overflow: 'auto', padding: '0 8px' }}>
           {groupedSessions.map((group) => (
             <div key={group.label}>
@@ -92,18 +220,40 @@ const ChatPage: React.FC = () => {
                     borderRadius: 6,
                     cursor: 'pointer',
                     marginBottom: 2,
-                    borderLeft: session.sessionId === currentSessionId ? '3px solid #1677FF' : '3px solid transparent',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
                   }}
+                  onClick={() => handleSelectSession(session.sessionId)}
                 >
-                  <Text
-                    ellipsis
-                    style={{ fontSize: 14, display: 'block', fontWeight: session.pinned ? 600 : 400 }}
+                  <div style={{ flex: 1, overflow: 'hidden' }}>
+                    <Text
+                      ellipsis
+                      style={{ fontSize: 14, display: 'block', fontWeight: session.pinned ? 600 : 400 }}
+                    >
+                      {session.pinned && <PushpinOutlined style={{ marginRight: 4, fontSize: 12 }} />}
+                      {session.title || '新对话'}
+                    </Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {truncateText(session.lastMessageSummary || '', 30)}
+                    </Text>
+                  </div>
+                  <Dropdown
+                    menu={{
+                      items: [
+                        { key: 'pin', icon: <PushpinOutlined />, label: session.pinned ? '取消置顶' : '置顶' },
+                        { key: 'rename', icon: <EditOutlined />, label: '重命名' },
+                        { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true },
+                      ],
+                      onClick: ({ key }) => {
+                        if (key === 'pin') handlePinSession(session.sessionId, session.pinned);
+                        if (key === 'delete') handleDeleteSession(session.sessionId);
+                      },
+                    }}
+                    trigger={['click']}
                   >
-                    {session.title || '新对话'}
-                  </Text>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {truncateText(session.lastMessageSummary || '', 30)}
-                  </Text>
+                    <Button type="text" size="small" icon={<MoreOutlined />} onClick={(e) => e.stopPropagation()} />
+                  </Dropdown>
                 </div>
               ))}
             </div>
@@ -111,128 +261,14 @@ const ChatPage: React.FC = () => {
         </div>
       </Sider>
 
-      {/* 右侧：对话区域 */}
-      <Content style={{ display: 'flex', flexDirection: 'column' }}>
-        {/* 消息区域 */}
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {/* 空状态：欢迎语卡片 */}
-          <div style={{ textAlign: 'center', maxWidth: 600 }}>
-            <div
-              style={{
-                width: 64,
-                height: 64,
-                borderRadius: 16,
-                background: 'linear-gradient(135deg, #1677FF 0%, #69B1FF 100%)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                margin: '0 auto 24px',
-                color: '#fff',
-                fontSize: 28,
-                fontWeight: 600,
-              }}
-            >
-              AI
-            </div>
-            <Title level={3} style={{ marginBottom: 8 }}>
-              你好！我是研发智能体
-            </Title>
-            <Text type="secondary" style={{ fontSize: 16, display: 'block', marginBottom: 32 }}>
-              可以帮你生成代码、评审代码、排查故障、查询知识
-            </Text>
-            <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
-              {QUICK_ENTRIES.map((entry) => (
-                <div
-                  key={entry.skill}
-                  style={{
-                    padding: '12px 20px',
-                    border: '1px solid #D9D9D9',
-                    borderRadius: 8,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    transition: 'all 0.2s',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = '#1677FF';
-                    e.currentTarget.style.color = '#1677FF';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = '#D9D9D9';
-                    e.currentTarget.style.color = 'inherit';
-                  }}
-                  onClick={() => setSelectedSkill(entry.skill)}
-                >
-                  {entry.icon}
-                  <span>{entry.label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* 底部：技能选择 + 输入区域 */}
-        <div style={{ borderTop: '1px solid #F0F0F0', padding: '12px 24px' }}>
-          {/* 技能选择栏 */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            {SKILL_OPTIONS.map((option) => (
-              <div
-                key={option.key}
-                onClick={() => setSelectedSkill(option.key)}
-                style={{
-                  padding: '4px 12px',
-                  borderRadius: 4,
-                  cursor: 'pointer',
-                  fontSize: 13,
-                  background: selectedSkill === option.key ? '#1677FF' : 'transparent',
-                  color: selectedSkill === option.key ? '#fff' : '#000000A0',
-                  border: `1px solid ${selectedSkill === option.key ? '#1677FF' : '#D9D9D9'}`,
-                  transition: 'all 0.2s',
-                }}
-              >
-                {option.label}
-              </div>
-            ))}
-          </div>
-
-          {/* 输入框 */}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-            <textarea
-              placeholder="输入消息，Shift+Enter 换行"
-              style={{
-                flex: 1,
-                minHeight: 40,
-                maxHeight: 200,
-                padding: '8px 12px',
-                borderRadius: 6,
-                border: '1px solid #D9D9D9',
-                outline: 'none',
-                resize: 'none',
-                fontSize: 14,
-                lineHeight: '22px',
-                fontFamily: 'inherit',
-              }}
-              rows={1}
-            />
-            <button
-              style={{
-                height: 40,
-                padding: '0 16px',
-                background: '#1677FF',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 6,
-                cursor: 'pointer',
-                fontSize: 14,
-                whiteSpace: 'nowrap',
-              }}
-            >
-              发送
-            </button>
-          </div>
-        </div>
-      </Content>
+      {/* 右侧：ChatPanel */}
+      <ChatPanel
+        messages={messages}
+        selectedSkill={selectedSkill}
+        onSkillChange={setSelectedSkill}
+        onSend={handleSend}
+        isStreaming={isStreaming}
+      />
     </Layout>
   );
 };

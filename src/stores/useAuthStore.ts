@@ -1,4 +1,4 @@
-// 认证状态管理
+// 认证状态管理 — Token 仅存内存，不持久化 localStorage
 
 import { create } from 'zustand';
 import type { UserRole } from '../types';
@@ -9,58 +9,59 @@ interface AuthState {
   realName: string | null;
   role: UserRole | null;
   roles: UserRole[];
+  permissions: string[];
   isAuthenticated: boolean;
 
-  login: (token: string, username: string, realName: string, roles: UserRole[]) => void;
+  login: (token: string, username: string, realName: string, roles: UserRole[], permissions: string[]) => void;
   logout: () => void;
   switchRole: (role: UserRole) => void;
+  setPermissions: (permissions: string[]) => void;
+  setToken: (token: string) => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
-  token: localStorage.getItem('token'),
-  username: localStorage.getItem('username'),
-  realName: localStorage.getItem('realName'),
-  role: (localStorage.getItem('currentRole') as UserRole) || null,
-  roles: JSON.parse(localStorage.getItem('roles') || '[]'),
-  isAuthenticated: !!localStorage.getItem('token'),
+  token: null,
+  username: null,
+  realName: null,
+  role: null,
+  roles: [],
+  permissions: [],
+  isAuthenticated: false,
 
-  login: (token, username, realName, roles) => {
-    localStorage.setItem('token', token);
-    localStorage.setItem('username', username);
-    localStorage.setItem('realName', realName);
-    localStorage.setItem('roles', JSON.stringify(roles));
+  login: (token, username, realName, roles, permissions) => {
     const defaultRole = roles[0] || null;
-    if (defaultRole) {
-      localStorage.setItem('currentRole', defaultRole);
-    }
     set({
       token,
       username,
       realName,
       role: defaultRole,
       roles,
+      permissions,
       isAuthenticated: true,
     });
   },
 
   logout: () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('username');
-    localStorage.removeItem('realName');
-    localStorage.removeItem('roles');
-    localStorage.removeItem('currentRole');
     set({
       token: null,
       username: null,
       realName: null,
       role: null,
       roles: [],
+      permissions: [],
       isAuthenticated: false,
     });
   },
 
   switchRole: (role) => {
-    localStorage.setItem('currentRole', role);
     set({ role });
+  },
+
+  setPermissions: (permissions) => {
+    set({ permissions });
+  },
+
+  setToken: (token) => {
+    set({ token });
   },
 }));
